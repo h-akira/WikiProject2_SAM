@@ -1,0 +1,392 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  WikiProject Backend
+
+  Backend API for WikiProject Vue app with hadx framework
+
+Parameters:
+  CustomDomainName:
+    Type: String
+    Description: "Custom domain name for CloudFront distribution (optional)"
+    Default: "wiki2.h-akira.net"
+  
+  ACMCertificateArn:
+    Type: String
+    Description: "ACM Certificate ARN for custom domain (required if CustomDomainName is specified)"
+    Default: ""
+  
+  S3BucketName:
+    Type: String
+    Description: "S3 bucket name for static files (must be pre-created)"
+    Default: ""
+
+Conditions:
+  HasCustomDomain: !Not [!Equals [!Ref CustomDomainName, ""]]
+  HasACMCertificate: !Not [!Equals [!Ref ACMCertificateArn, ""]]
+  HasS3Bucket: !Not [!Equals [!Ref S3BucketName, ""]]
+
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 30
+    Tracing: Active
+    MemorySize: 512
+    Environment:
+      Variables:
+        WIKI_TABLE: !Ref WikiTable
+        STORAGE_TABLE: !Ref StorageTable
+        S3_BUCKET: !Ref S3Bucket
+        CORS_ORIGIN: '*'
+    # You can add LoggingConfig parameters such as the Logformat, Log Group, and SystemLogLevel or ApplicationLogLevel. Learn more here https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-function.html#sam-function-loggingconfig.
+  Api:
+    TracingEnabled: true
+
+Resources:
+  # DynamoDB Tables
+  WikiTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: 'wikiproject-table'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: username
+          AttributeType: S
+        - AttributeName: slug
+          AttributeType: S
+        - AttributeName: share_code
+          AttributeType: S
+      KeySchema:
+        - AttributeName: username
+          KeyType: HASH
+        - AttributeName: slug
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: ShareCodeIndex
+          KeySchema:
+            - AttributeName: share_code
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+
+  StorageTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: 'wikiproject-storage-table'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: owner
+          AttributeType: S
+        - AttributeName: path
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: OwnerPathIndex
+          KeySchema:
+            - AttributeName: owner
+              KeyType: HASH
+            - AttributeName: path
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  # S3 Bucket for file storage
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: 'wikiproject-storage'
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, POST, PUT, DELETE]
+            AllowedOrigins: ['*']
+            MaxAge: 3000
+
+  WikiProjectAPIGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: 'api-wikiproject'
+      StageName: 'prod'
+      EndpointConfiguration: REGIONAL
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowOrigin: "'*'"
+
+  WikiProjectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: 'lambda-wikiproject'
+      CodeUri: Lambda/
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.13
+      Role: !GetAtt LambdaExecutionRole.Arn
+      LoggingConfig:
+        LogFormat: JSON
+      Events:
+        ApiRoot:
+          Type: Api
+          Properties:
+            Path: '/'
+            Method: ANY
+            RestApiId: !Ref WikiProjectAPIGateway
+        ApiProxy:
+          Type: Api
+          Properties:
+            Path: '/{proxy+}'
+            Method: ANY
+            RestApiId: !Ref WikiProjectAPIGateway
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: 'role-wikiproject-lambda-exec'
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        - "arn:aws:iam::aws:policy/AmazonCognitoPowerUser"
+      Policies:
+        - PolicyName: "policy-wikiproject-lambda-exec"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "ssm:GetParameter"
+                  - "dynamodb:PutItem"
+                  - "dynamodb:GetItem"
+                  - "dynamodb:Query"
+                  - "dynamodb:UpdateItem"
+                  - "dynamodb:DeleteItem"
+                  - "dynamodb:Scan"
+                  - "s3:GetObject"
+                  - "s3:PutObject"
+                  - "s3:DeleteObject"
+                Resource: "*"
+
+  # CloudFront Origin Request Policy
+  CloudFrontOriginRequestPolicy:
+    Type: AWS::CloudFront::OriginRequestPolicy
+    Properties:
+      OriginRequestPolicyConfig:
+        Name: !Sub "${AWS::StackName}-OriginRequestPolicy"
+        Comment: "Policy to forward all parameters in viewer requests except for the Host header"
+        QueryStringsConfig:
+          QueryStringBehavior: "all"
+        HeadersConfig:
+          HeaderBehavior: "allExcept"
+          Headers:
+            - "host"
+        CookiesConfig:
+          CookieBehavior: "all"
+
+  # CloudFront Cache Policy - Caching Disabled
+  CloudFrontCachePolicyCachingDisabled:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "${AWS::StackName}-CachingDisabled"
+        Comment: "Policy with caching disabled"
+        MinTTL: 0
+        MaxTTL: 0
+        DefaultTTL: 0
+        ParametersInCacheKeyAndForwardedToOrigin:
+          QueryStringsConfig:
+            QueryStringBehavior: "none"
+          HeadersConfig:
+            HeaderBehavior: "none"
+          CookiesConfig:
+            CookieBehavior: "none"
+          EnableAcceptEncodingGzip: false
+          EnableAcceptEncodingBrotli: false
+
+  # CloudFront Cache Policy - Caching Optimized
+  CloudFrontCachePolicyCachingOptimized:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "${AWS::StackName}-CachingOptimized"
+        Comment: "Policy with caching enabled. Supports Gzip and Brotli compression."
+        MinTTL: 1
+        MaxTTL: 31536000
+        DefaultTTL: 86400
+        ParametersInCacheKeyAndForwardedToOrigin:
+          QueryStringsConfig:
+            QueryStringBehavior: "none"
+          HeadersConfig:
+            HeaderBehavior: "none"
+          CookiesConfig:
+            CookieBehavior: "none"
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+
+  # CloudFront Origin Access Control
+  CloudFrontOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-OAC"
+        Description: "Origin Access Control for S3"
+        OriginAccessControlOriginType: "s3"
+        SigningBehavior: "always"
+        SigningProtocol: "sigv4"
+
+  # CloudFront Distribution
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: !Sub "${AWS::StackName} CloudFront Distribution"
+        Enabled: true
+        IPV6Enabled: true
+        HttpVersion: "http2and3"
+        PriceClass: "PriceClass_100"
+        DefaultRootObject: "index.html"
+        
+        # 独自ドメインの設定（条件分岐）
+        Aliases: !If
+          - HasCustomDomain
+          - [!Ref CustomDomainName]
+          - !Ref "AWS::NoValue"
+        
+        # SSL証明書の設定（条件分岐）
+        ViewerCertificate: !If
+          - HasCustomDomain
+          - AcmCertificateArn: !Ref ACMCertificateArn
+            SslSupportMethod: "sni-only"
+            MinimumProtocolVersion: "TLSv1.2_2021"
+          - CloudFrontDefaultCertificate: true
+        
+        Origins:
+          # API Gateway Origin
+          - Id: !Sub "${WikiProjectAPIGateway}.execute-api.${AWS::Region}.amazonaws.com"
+            DomainName: !Sub "${WikiProjectAPIGateway}.execute-api.${AWS::Region}.amazonaws.com"
+            OriginPath: "/prod"
+            CustomOriginConfig:
+              HTTPPort: 80
+              HTTPSPort: 443
+              OriginProtocolPolicy: "https-only"
+              OriginSSLProtocols:
+                - "TLSv1.2"
+              OriginKeepaliveTimeout: 5
+              OriginReadTimeout: 30
+            ConnectionAttempts: 3
+            ConnectionTimeout: 10
+          
+          # S3 Origin for static files (conditional)
+          - !If
+            - HasS3Bucket
+            - Id: !Sub "${S3BucketName}.s3.${AWS::Region}.amazonaws.com"
+              DomainName: !Sub "${S3BucketName}.s3.${AWS::Region}.amazonaws.com"
+              OriginPath: "/dist"
+              OriginAccessControlId: !Ref CloudFrontOriginAccessControl
+              S3OriginConfig:
+                OriginAccessIdentity: ""
+              ConnectionAttempts: 3
+              ConnectionTimeout: 10
+            - !Ref "AWS::NoValue"
+        
+        DefaultCacheBehavior: !If
+          - HasS3Bucket
+          - TargetOriginId: !Sub "${S3BucketName}.s3.${AWS::Region}.amazonaws.com"
+            ViewerProtocolPolicy: "redirect-to-https"
+            Compress: true
+            AllowedMethods:
+              - "HEAD"
+              - "GET"
+            CachedMethods:
+              - "HEAD"
+              - "GET"
+            CachePolicyId: !Ref CloudFrontCachePolicyCachingOptimized
+          # S3バケットがない場合はAPI Gatewayをデフォルトに
+          - TargetOriginId: !Sub "${WikiProjectAPIGateway}.execute-api.${AWS::Region}.amazonaws.com"
+            ViewerProtocolPolicy: "redirect-to-https"
+            Compress: true
+            AllowedMethods:
+              - "HEAD"
+              - "DELETE"
+              - "POST"
+              - "GET"
+              - "OPTIONS"
+              - "PUT"
+              - "PATCH"
+            CachedMethods:
+              - "HEAD"
+              - "GET"
+            CachePolicyId: !Ref CloudFrontCachePolicyCachingDisabled
+            OriginRequestPolicyId: !Ref CloudFrontOriginRequestPolicy
+        
+        CacheBehaviors:
+          # API routes - no caching
+          - PathPattern: "/api/*"
+            TargetOriginId: !Sub "${WikiProjectAPIGateway}.execute-api.${AWS::Region}.amazonaws.com"
+            ViewerProtocolPolicy: "redirect-to-https"
+            Compress: true
+            AllowedMethods:
+              - "HEAD"
+              - "DELETE"
+              - "POST"
+              - "GET"
+              - "OPTIONS"
+              - "PUT"
+              - "PATCH"
+            CachedMethods:
+              - "HEAD"
+              - "GET"
+            CachePolicyId: !Ref CloudFrontCachePolicyCachingDisabled
+            OriginRequestPolicyId: !Ref CloudFrontOriginRequestPolicy
+
+  ApplicationResourceGroup:
+    Type: AWS::ResourceGroups::Group
+    Properties:
+      Name:
+        Fn::Sub: ApplicationInsights-SAM-${AWS::StackName}
+      ResourceQuery:
+        Type: CLOUDFORMATION_STACK_1_0
+  ApplicationInsightsMonitoring:
+    Type: AWS::ApplicationInsights::Application
+    Properties:
+      ResourceGroupName:
+        Ref: ApplicationResourceGroup
+      AutoConfigurationEnabled: 'true'
+
+Outputs:
+  WikiProjectApi:
+    Description: "API Gateway endpoint URL for WikiProject"
+    Value: !Sub "https://${WikiProjectAPIGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/"
+  WikiProjectFunction:
+    Description: "WikiProject Lambda Function ARN"
+    Value: !GetAtt WikiProjectFunction.Arn
+  CloudFrontDistributionDomainName:
+    Description: "CloudFront distribution domain name"
+    Value: !GetAtt CloudFrontDistribution.DomainName
+  CloudFrontDistributionURL:
+    Description: "CloudFront distribution URL"
+    Value: !If
+      - HasCustomDomain
+      - !Sub "https://${CustomDomainName}"
+      - !Sub "https://${CloudFrontDistribution.DomainName}"
+  S3BucketName:
+    Description: "S3 Bucket name for static files"
+    Value: !If
+      - HasS3Bucket
+      - !Ref S3BucketName
+      - "No S3 bucket specified"
+  S3BucketWebsiteURL:
+    Description: "S3 Bucket website URL"
+    Value: !If
+      - HasS3Bucket
+      - !Sub "https://${S3BucketName}.s3.${AWS::Region}.amazonaws.com"
+      - "No S3 bucket specified"

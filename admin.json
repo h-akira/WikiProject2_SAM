@@ -1,0 +1,13 @@
+{
+  "region": "ap-northeast-1",
+  "profile": "default",
+  "cognito": {
+    "domain": "your-cognito-domain",
+    "user_pool_id": "ap-northeast-1_XXXXXXXXX",
+    "client_id": "xxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "client_secret": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  "url": {
+    "home": "https://wiki2.h-akira.net"
+  }
+}

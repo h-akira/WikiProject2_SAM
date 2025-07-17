@@ -1,0 +1,1 @@
+hadx @ git+https://github.com/h-akira/hadx.git@main

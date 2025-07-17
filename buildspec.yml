@@ -1,0 +1,16 @@
+version: 0.2
+
+env:
+  parameter-store:
+    CustomDomainName: "/Wikiproject/v2/domain"
+    ACMCertificateArn: "/Common/ACM/Arn"
+    S3BucketName: "/Wikiproject/v2/S3/bucket/contents"
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.13
+  build:
+    commands:
+      - sam build --parameter-overrides CustomDomainName=${CustomDomainName} ACMCertificateArn=${ACMCertificateArn} S3BucketName=${S3BucketName}
+      - sam deploy --no-confirm-changeset --no-fail-on-empty-changeset --parameter-overrides CustomDomainName=${CustomDomainName} ACMCertificateArn=${ACMCertificateArn} S3BucketName=${S3BucketName}
