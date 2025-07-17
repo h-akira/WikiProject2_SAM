@@ -1,7 +1,7 @@
 import os
 
-MAPPING_PATH = ""  # API Gatewayをそのまま使う場合はステージ名、独自ドメインを使う場合は空文字列、Localでは空文字列に上書き
-MAPPING_PATH_LOCAL = ""  # API Gatewayをそのまま使う場合はステージ名、独自ドメインを使う場合は空文字列、Localでは空文字列に上書き
+MAPPING_PATH = ""  # 独自ドメインを使用
+MAPPING_PATH_LOCAL = ""  # ローカル開発時のパス設定
 DEBUG = True
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__),"../"))
 TEMPLATE_DIR = os.path.join(BASE_DIR, "templates")
